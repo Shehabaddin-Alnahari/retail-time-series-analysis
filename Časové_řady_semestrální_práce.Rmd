@@ -1,0 +1,280 @@
+---
+title: "Analýza časových řad - Maloobchodní tržby"
+output:
+  html_document: default
+date: "2026-09-10"
+---
+
+```{r}
+library(czso)
+library(tidyverse)
+```
+
+```{r}
+katalog <- czso_get_catalogue()
+
+id_datasetu <- katalog$dataset_id[grep("maloobchod", katalog$title, ignore.case = TRUE)][1]
+
+df_trzby <- czso_get_table(id_datasetu)
+
+head(df_trzby)
+```
+
+
+
+```{r}
+# Vypsání všech unikátních textových hodnot v klíčových sloupcích
+df_trzby %>% distinct(cznace_txt)
+df_trzby %>% distinct(ocisteni_txt)
+df_trzby %>% distinct(oceneni_txt)
+df_trzby %>% distinct(casz_txt)
+```
+
+
+```{r}
+# KROK 1: Filtrace hlavní řady
+hlavni_rada <- df_trzby %>%
+  filter(
+    cznace_txt == "Maloobchod, kromě motorových vozidel",
+    ocisteni_txt == "neočištěno",
+    oceneni_txt == "stálé (průměrné) ceny roku",
+    casz_txt == "průměr bazického roku"
+  ) %>%
+  arrange(rok, mesic)
+
+# Kontrola, kolik nám zbylo řádků (mělo by jich být přes 100, podle toho jak daleko data sahají)
+nrow(hlavni_rada)
+
+# Zjištění počátku řady
+start_rok <- min(hlavni_rada$rok)
+start_mesic <- hlavni_rada$mesic[1]
+
+# Vytvoření časové řady (frekvence 12 pro měsíční data)
+ts_hlavni <- ts(hlavni_rada$hodnota, start = c(start_rok, start_mesic), frequency = 12)
+```
+
+```{r}
+# --- Bod i) Grafické zobrazení řady ---
+plot(ts_hlavni, 
+     main = "Vývoj indexu celkových maloobchodních tržeb",
+     ylab = "Index tržeb", 
+     xlab = "Rok", 
+     col = "darkblue", 
+     lwd = 1.5)
+grid()
+```
+Z grafického zobrazení je patrná silná sezónní složka s roční periodou (pravidelné prosincové špičky a propady na začátku roku). Zároveň je v datech zřejmý dlouhodobý nelineární trend.
+
+
+```{r}
+# --- Bod ii) Dekompozice a vyhlazení trendu ---
+library(forecast)
+
+# Vyhlazení pomocí centrovaných klouzavých průměrů délky 12 (roční sezónnost)
+trend_kp <- ma(ts_hlavni, order = 12, centre = TRUE)
+
+# Grafické srovnání původní řady a vyhlazeného trendu
+plot(ts_hlavni, 
+     main = "Maloobchodní tržby a vyhlazení trendu (KP 12)", 
+     ylab = "Index", xlab = "Rok", col = "gray")
+lines(trend_kp, col = "red", lwd = 2)
+legend("topleft", legend=c("Původní řada", "Trend (KP 12)"), 
+       col=c("gray", "red"), lty=1, lwd=2)
+
+# Dekompozice řady 
+dekompozice <- decompose(ts_hlavni, type = "multiplicative")
+plot(dekompozice)
+```
+Pro identifikaci trendu byla využita metoda klouzavých průměrů. Vzhledem k měsíční frekvenci dat a potřebě odfiltrovat sezónní výkyvy se sudou délkou sezóny, byl aplikován centrovaný klouzavý průměr délky 12. Následná dekompozice potvrzuje deterministickou sezónnost a jasně vizualizuje nelineární vývoj trendu.
+
+
+```{r}
+# 1. Model: Lineární trend + sezónní dummy proměnné
+model_dummy <- tslm(ts_hlavni ~ trend + season)
+
+# 2. Model: Lineární trend + Fourierovy koeficienty 
+model_fourier <- tslm(ts_hlavni ~ trend + fourier(ts_hlavni, K = 3))
+
+# Porovnání modelů pomocí informačních kritérií
+# Hledáme model s nejnižší hodnotou AIC/BIC
+AIC(model_dummy, model_fourier)
+BIC(model_dummy, model_fourier)
+
+# Vykreslení modelu
+plot(ts_hlavni, 
+     main = "Skutečné hodnoty vs. Deterministický model", 
+     ylab = "Index tržeb", xlab = "Rok", col = "gray")
+lines(fitted(model_dummy), col = "red", lwd = 1.5)
+legend("topleft", legend = c("Původní řada", "Fitted (Trend + Dummy)"), 
+       col = c("gray", "red"), lty = 1, lwd = 1.5)
+
+# --- Kontrola předpokladů regresního modelu ---
+# Vykreslení reziduí, ACF a provedení Ljung-Boxova testu
+checkresiduals(model_dummy)
+```
+Pro nalezení optimálního deterministického modelu samotné řady byly odhadnuty dva regresní modely. První model popisuje lineární trend a sezónnost pomocí umělých (dummy) proměnných. Druhý model využívá lineární trend v kombinaci s Fourierovými koeficienty (K=3). Kvalita modelů byla hodnocena na základě Akaikeho (AIC) a Bayesovského (BIC) informačního kritéria, kde preferujeme model s nejnižšími hodnotami.  Jako optimální byl v tomto kroku vyhodnocen model s dummy proměnnými. Zvolený model (lineární trend se sezónními dummy proměnnými) sice úspěšně zachycuje základní roční periodicitu, avšak nedokáže se adaptovat na nelineární výkyvy v trendu. Analýza reziduí potvrzuje, že předpoklady regresního modelu nejsou splněny. V grafu reziduí v čase pozorujeme zřetelné vlny (neodpovídá bílému šumu) a autokorelační funkce (ACF) vykazuje silný, pomalu klesající charakter. Breusch-Godfreyův test s p-hodnotou < 2.2e-16 zamítá nulovou hypotézu o nezávislosti reziduí. Vzhledem k vysoké autokorelaci je nutné přejít od čistě deterministického přístupu k modelování pomocí Box-Jenkinsovy metodologie, konkrétně modelům SARIMA.
+
+
+```{r}
+# iii) Co vidíte z odhadnutého deterministického modelu s dummy proměnnými? Jaký Vám vyšel trend? Jak byste popsal sezónnost?
+
+summary(model_dummy)
+```
+
+
+```{r}
+# --- Bod iv) Hledání optimálního modelu typu SARIMA ---
+# Funkce auto.arima projde kombinace parametrů a vybere nejlepší model podle AIC/BIC.
+# Parametry stepwise = FALSE a approximation = FALSE zajistí důkladnější (i když pomalejší) prohledání.
+model_sarima <- auto.arima(ts_hlavni, 
+                           seasonal = TRUE, 
+                           stepwise = FALSE, 
+                           approximation = FALSE)
+
+# Vypsání detailů optimálního modelu (parametry, AIC, BIC)
+summary(model_sarima)
+
+# --- Kontrola předpokladů pro SARIMA model ---
+# Zobrazení reziduí, ACF a Ljung-Box test
+checkresiduals(model_sarima)
+```
+Pro modelování náhodné složky a odstranění autokorelace byla využita Box-Jenkinsova metodologie. K nalezení optimálních řádů diferencí a parametrů byl využit algoritmus minimalizující informační kritéria (AICc a BIC). Jako nejvhodnější byl identifikován model SARIMA s parametry (1,0,2)(1,1,1)[12] a driftem. Tento model využívá pro stacionarizaci jednu sezónní diferenci a drift pro zachycení trendu.
+Diagnostika reziduí:
+Kontrola reziduí ukazuje zásadní zlepšení. Většina hodnot v ACF grafu se nachází v pásu spolehlivosti, což znamená, že závislost v čase byla odstraněna. P-hodnota Ljung-Boxova testu (p = 0.032) je sice těsně pod ideální hranicí, avšak vizuálně rezidua splňují předpoklady bílého šumu (jsou nezávislá, bez systematických vln). Vzhledem k nejnižší hodnotě informačního kritéria (AIC) a odstranění silné autokorelace považujeme tento model v tomto kroku za optimální
+
+```{r}
+library(forecast)
+
+# 1. Diferencování řady
+ts_diff <- diff(ts_hlavni, lag = 12)
+
+# 2. Zobrazení ACF a PACF pro ruční výběr parametrů
+tsdisplay(ts_diff, main = "Hledání parametrů p a q na diferencované řadě")
+
+# 3. Tady si ručně zadáváš a měníš čísla
+# Zkus si změnit order=c(p,d,q) a seasonal=c(P,D,Q) a sleduj, jak se mění AIC
+moj_model <- Arima(ts_hlavni, 
+                   order = c(2, 0, 1),        # Běžná část: (p, d, q)
+                   seasonal = c(2, 1, 1),     # Sezónní část: (P, D, Q)
+                   include.drift = TRUE)
+
+# 4. Kontrola výsledku
+summary(moj_model)
+checkresiduals(moj_model)
+```
+
+
+```{r}
+# --- Bod v) hledání závislostí na jiných řadách ---
+# 1. Filtrace vedlejší řady (např. potraviny)
+vedlejsi_rada <- df_trzby %>%
+  filter(
+    cznace_txt == "Maloobchod s potravinami", 
+    ocisteni_txt == "neočištěno",
+    oceneni_txt == "stálé (průměrné) ceny roku",
+    casz_txt == "průměr bazického roku"
+  ) %>%
+  arrange(rok, mesic)
+
+# 2. Vytvoření časové řady
+ts_vedlejsi <- ts(vedlejsi_rada$hodnota, start = c(start_rok, start_mesic), frequency = 12)
+
+# 3. Výpočet a vykreslení kroskorelační funkce (CCF)
+# Používáme diferencované řady (diff), abychom odstranili trend a viděli čistou korelaci
+ccf(diff(ts_vedlejsi), diff(ts_hlavni), 
+    main = "Kroskorelogram: Potraviny vs. Celkové tržby", 
+    ylab = "CCF")
+```
+Pro analýzu vlivu vnějších faktorů jsme jako vysvětlující proměnnou (regresor) zvolili řadu maloobchodních tržeb za potraviny. Abychom předešli zdánlivé korelaci způsobené sdíleným rostoucím trendem, byly obě řady nejprve diferencovány. Následně byla aplikována kroskorelační funkce (CCF). Nejvyšší hodnota kroskorelační funkce ukazuje na zpoždění, se kterým se skutečná závislost projeví. Z grafu je patrné, že dominantní korelace nastává při zpoždění k = 0. Významné hodnoty na zpožděních +-1 (v kontextu měsíčních dat +-12 měsíců) jsou odrazem společné sezónnosti. Pro účely modelování je však stěžejní nulové zpoždění, což znamená, že tržby za potraviny ovlivňují celkový objem tržeb okamžitě ve stejném období.
+
+
+```{r}
+# --- Bod vi) Dynamický model s externím regresorem ---
+# Použijeme řadu potravin jako regresor (xreg). Zpoždění je 0, takže vkládáme řadu přímo.
+model_dynamicky <- auto.arima(ts_hlavni, 
+                              xreg = ts_vedlejsi,
+                              seasonal = TRUE, 
+                              stepwise = FALSE, 
+                              approximation = FALSE)
+
+# Vypsání detailů optimálního dynamického modelu
+summary(model_dynamicky)
+
+# --- Kontrola předpokladů dynamického modelu ---
+checkresiduals(model_dynamicky)
+```
+Pro vytvoření optimálního modelu, který kombinuje vliv externího prostředí a vnitřní dynamiku časové řady, byl sestaven lineární dynamický model s ARIMA chybami. Na základě výsledků kroskorelační funkce byla jako vysvětlující proměnná zařazena řada tržeb za potraviny s nulovým zpožděním. Případná autokorelovanost reziduí této regrese byla automaticky řešena vyhledáním vhodného SARIMA modelu pro náhodnou složku začleněním externího regresoru. Výsledkem je regresní model s chybami typu ARIMA (0,1,2)(1,1,1)[12].
+
+Diagnostika reziduí ukazuje, že dynamický model úspěšně a kompletně odstranil autokorelaci. Zbytková rezidua nevykazují vizuálně žádné systematické fluktuace (s výjimkou vnějšího šoku kolem roku 2020) a Ljung-Boxův test s p-hodnotou 0.1424 jednoznačně nezamítá hypotézu o jejich nezávislosti (rezidua tvoří bílý šum). Přidání regresoru navíc radikálně snížilo hodnotu informačního kritéria AIC na hodnotu 1315.42, čímž se tento model potvrdil jako prokazatelně nejkvalitnější pro popis a predikci zkoumané řady.
+
+
+```{r}
+# --- Bod vii) Kontrola periody pomocí periodogramu ---
+library(TSA)
+
+# Vykreslení periodogramu diferencované řady (odstranění trendu)
+p_diff <- periodogram(diff(ts_hlavni), 
+                 main = "Periodogram: Diferencované maloobchodní tržby", 
+                 ylab = "Hodnota periodogramu",
+                 col = "darkblue",
+                 lwd = 1.5)
+
+# Nalezení dominantní frekvence (sezónnosti)
+dominantni_frekvence <- p_diff$freq[which.max(p_diff$spec)]
+perioda <- 1 / dominantni_frekvence
+
+cat("Dominantní frekvence:", dominantni_frekvence, "\n")
+cat("Odpovídající perioda:", perioda, "\n")
+```
+Pro matematické ověření opakujících se cyklů byl zkonstruován periodogram diferencované řady (za účelem očištění dat od dlouhodobého rostoucího trendu). Z provedené spektrální analýzy je patrné, že dominantní špička se nachází na frekvenci 0.5, což odpovídá periodě 2 měsíců.Tento jev je typický pro maloobchodní data s ostrými sezónními špičkami. Extrémní nárůst tržeb v prosinci a jejich okamžitý propad v lednu vytváří v diferencované řadě skokové střídání extrémních hodnot mezi dvěma po sobě jdoucími měsíci. Tento výrazný meziměsíční výkyv se v periodogramu projevuje jako dominantní složka rozptylu (dvouměsíční cyklus). V periodogramu jsou však jasně patrné i další významné špičky na harmonických frekvencích (např. f = 0.25, tj. perioda 4 měsíce, nebo f ~ 0.166, tj. perioda 6 měsíců). Společně tyto harmonické složky potvrzují komplexní roční sezónnost, která není tvořena hladkou goniometrickou křivkou, ale náhlými sezónními výkyvy na přelomu roku.
+
+
+```{r}
+# --- Bod ix) Predikce 10 budoucích pozorování ---
+
+# Predikce z čistého SARIMA modelu (model_sarima z bodu iv)
+predikce_hlavni <- forecast(model_sarima, h = 10)
+
+# Vykreslení výsledné predikce
+plot(predikce_hlavni, 
+     main = "Predikce celkových maloobchodních tržeb na 10 měsíců",
+     ylab = "Index tržeb",
+     xlab = "Rok",
+     col = "gray",
+     fcol = "blue",
+     flwd = 2)
+grid()
+```
+V závěrečném kroku byla provedena predikce 10 budoucích pozorování. Pro tento účel byl využit nalezený optimální SARIMA model (bez externích regresorů), u kterého predikce vychází čistě ze zjištěné autokorelační a sezónní struktury samotné řady.
+
+Výsledný graf zobrazuje skutečný průběh tržeb a navazující bodovou predikci pro 10 následujících měsíců. Šedé oblasti kolem predikce ohraničují 80% a 95% intervaly spolehlivosti. Z průběhu predikovaných hodnot je zřejmé, že model úspěšně replikuje silnou roční sezónnost řady (zejména ostrý prosincový vrchol a následný lednový propad) a přirozeně navazuje na předchozí vývoj maloobchodních tržeb.
+
+
+## x) Porovnání jednotlivých modelů a závěr
+V rámci této seminární práce jsme postupně aplikovali tři různé analytické přístupy k modelování časové řady maloobchodních tržeb. Cílem bylo nalézt optimální model, který by co nejpřesněji popsal chování řady, očistil data od autokorelace a umožnil spolehlivou predikci.
+
+#1. Deterministický model
+Proč: Metoda byla použita pro prvotní exaktní podchycení zjevného dlouhodobého trendu a roční sezónnosti čistě pomocí matematických funkcí času.
+
+Co vyšlo: Porovnáním modelů s Fourierovými koeficienty a umělými (dummy) proměnnými přes informační kritéria (AIC/BIC) zvítězil model s dummy proměnnými.
+
+Optimální model kroku: Lineární trend se sezónními dummy proměnnými. Diagnostika však ukázala, že deterministický přístup nedokáže zachytit náhodnou složku (rezidua vykazovala silnou autokorelaci s p-hodnotou < 2.2e-16). To vyvolalo nutnost přechodu k Box-Jenkinsově metodologii.
+
+#2. Stochastický model (SARIMA)
+Proč: Cílem tohoto kroku bylo modelovat vnitřní paměť řady (náhodnou složku) a vyřešit problém s autokorelací reziduí z předchozího kroku.
+
+Co vyšlo: Počítačový algoritmus minimalizující informační kritéria vybral vhodnou kombinaci diferencí a autoregresních/klouzavých procesů (AIC = 1463.15).
+
+Optimální model kroku: ARIMA(1,0,2)(1,1,1)[12] with drift. Model úspěšně stacionarizoval řadu a radikálně vylepšil vlastnosti reziduí, avšak Ljung-Boxův test (p = 0.032) indikoval ještě velmi mírnou zbytkovou závislost.
+
+#3. Dynamický model (SARIMA s externím regresorem)
+Proč: K dosažení dokonalého modelu a vysvětlení zbývající variability byla do modelu přidána závislost na externím vlivu (tržby za potraviny) na základě výsledků kroskorelační funkce (zpoždění 0).
+
+Co vyšlo: Zahrnutí vysvětlující proměnné snížilo informační kritérium na minimum z celé analýzy (AIC = 1315.42) a rezidua se transformovala na čistý bílý šum (Ljung-Box p = 0.1424).
+
+Optimální model kroku: Dynamická regrese s chybami typu ARIMA(0,1,2)(1,1,1)[12].
+
+#Celkové zhodnocení:
+Z hlediska exaktního popisu historických dat a striktního splnění statistických předpokladů (nezávislost reziduí) je absolutním vítězem dynamický model s externím regresorem. Analýza prokázala, že celkové maloobchodní tržby jsou významně a okamžitě ovlivňovány vývojem nákupů potravin.
+
+Navzdory technické převaze dynamického modelu byl však pro samotnou predikci 10 budoucích období využit jednorozměrný SARIMA model (z druhého kroku). Tento model byl zvolen z praktických důvodů, neboť k výpočtu budoucnosti využívá výhradně vlastní autokorelační a sezónní strukturu a nezatěžuje predikci dodatečnou nejistotou plynoucí z nutnosti odhadovat budoucí hodnoty externího regresoru.

@@ -2,7 +2,7 @@
 
 > **Note:** The source code comments and the detailed analytical report within the `.Rmd` file are written in Czech, as this was a university semester project.
 
-👉 **[View the Interactive HTML Report here](https://github.com/Shehabaddin-Alnahari/retail-time-series-analysis/blob/main/%C4%8Casov%C3%A9_%C5%99ady_semestr%C3%A1ln%C3%AD_pr%C3%A1ce.html)**
+👉 **[View the Interactive HTML Report here](https://htmlpreview.github.io/https://github.com/Shehabaddin-Alnahari/retail-time-series-analysis/blob/main/%C4%8Casov%C3%A9_%C5%99ady_semestr%C3%A1ln%C3%AD_pr%C3%A1ce.html)**
 
 ## 🎯 Project Overview
 Comprehensive time-series analysis and forecasting of Czech retail sales data using R. The project systematically compares deterministic models, stochastic Box-Jenkins methodology (SARIMA), and dynamic regression models with external regressors to find the optimal forecasting approach.
